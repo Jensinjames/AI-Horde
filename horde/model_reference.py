@@ -1,7 +1,10 @@
+import os
+
 import requests
 
 from horde.logger import logger
 from horde.threads import PrimaryTimedFunction
+
 
 class ModelReference(PrimaryTimedFunction):
     quorum = None
@@ -11,31 +14,59 @@ class ModelReference(PrimaryTimedFunction):
     text_model_names = set()
     nsfw_models = set()
     controlnet_models = set()
+    # Workaround because users lacking customizer role are getting models not in the reference stripped away.
+    # However due to a racing or caching issue, this causes them to still pick jobs using those models
+    # Need to investigate more to remove this workaround
+    testing_models = {}
 
     def call_function(self):
-        '''Retrieves to nataili and text model reference and stores in it a var'''
+        """Retrieves to nataili and text model reference and stores in it a var"""
         # If it's running in SQLITE_MODE, it means it's a test and we never want to grab the quorum
         # We don't want to report on any random model name a client might request
-        for iter in range(10):
+        for _riter in range(10):
             try:
-                self.reference = requests.get("https://raw.githubusercontent.com/Haidra-Org/AI-Horde-image-model-reference/main/stable_diffusion.json", timeout=2).json()
-                diffusers = requests.get("https://raw.githubusercontent.com/Haidra-Org/AI-Horde-image-model-reference/main/diffusers.json", timeout=2).json()
+                self.reference = requests.get(
+                    os.getenv(
+                        "HORDE_IMAGE_COMPVIS_REFERENCE",
+                        "https://raw.githubusercontent.com/Haidra-Org/AI-Horde-image-model-reference/main/stable_diffusion.json",
+                    ),
+                    timeout=2,
+                ).json()
+                diffusers = requests.get(
+                    os.getenv(
+                        "HORDE_IMAGE_DIFFUSERS_REFERENCE",
+                        "https://raw.githubusercontent.com/Haidra-Org/AI-Horde-image-model-reference/main/diffusers.json",
+                    ),
+                    timeout=2,
+                ).json()
                 self.reference.update(diffusers)
                 # logger.debug(self.reference)
                 self.stable_diffusion_names = set()
                 for model in self.reference:
-                    if self.reference[model].get("baseline") in {"stable diffusion 1","stable diffusion 2", "stable diffusion 2 512", "stable_diffusion_xl"}:
+                    if self.reference[model].get("baseline") in {
+                        "stable diffusion 1",
+                        "stable diffusion 2",
+                        "stable diffusion 2 512",
+                        "stable_diffusion_xl",
+                        "stable_cascade",
+                    }:
                         self.stable_diffusion_names.add(model)
                         if self.reference[model].get("nsfw"):
                             self.nsfw_models.add(model)
                         if self.reference[model].get("type") == "controlnet":
                             self.controlnet_models.add(model)
-                break            
+                break
             except Exception as e:
                 logger.error(f"Error when downloading nataili models list: {e}")
-        for iter in range(10):
+        for _riter in range(10):
             try:
-                self.text_reference = requests.get("https://raw.githubusercontent.com/db0/AI-Horde-text-model-reference/main/db.json", timeout=2).json()
+                self.text_reference = requests.get(
+                    os.getenv(
+                        "HORDE_IMAGE_LLM_REFERENCE",
+                        "https://raw.githubusercontent.com/db0/AI-Horde-text-model-reference/main/db.json",
+                    ),
+                    timeout=2,
+                ).json()
                 # logger.debug(self.reference)
                 self.text_model_names = set()
                 for model in self.text_reference:
@@ -56,6 +87,10 @@ class ModelReference(PrimaryTimedFunction):
         model_details = self.reference.get(model_name, {})
         return model_details.get("baseline", "stable diffusion 1")
 
+    def get_model_requirements(self, model_name):
+        model_details = self.reference.get(model_name, {})
+        return model_details.get("requirements", {})
+
     def get_model_csam_whitelist(self, model_name):
         model_details = self.reference.get(model_name, {})
         return set(model_details.get("csam_whitelist", []))
@@ -74,7 +109,7 @@ class ModelReference(PrimaryTimedFunction):
     def has_inpainting_models(self, model_names):
         for model_name in model_names:
             model_details = self.reference.get(model_name, {})
-            if model_details.get("style") == "inpainting":
+            if model_details.get("inpainting"):
                 return True
         return False
 
@@ -83,7 +118,7 @@ class ModelReference(PrimaryTimedFunction):
             return False
         for model_name in model_names:
             model_details = self.reference.get(model_name, {})
-            if model_details.get("style") != "inpainting":
+            if not model_details.get("inpainting"):
                 return False
         return True
 
@@ -113,4 +148,6 @@ class ModelReference(PrimaryTimedFunction):
         #     return True
         return False
 
+
 model_reference = ModelReference(3600, None)
+model_reference.call_function()
